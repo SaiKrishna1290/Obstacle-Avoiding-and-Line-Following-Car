@@ -59,6 +59,7 @@ delay(10);
 } 
 void servoPulse (int pin, int angle){ 
 int pwm = (angle*11) + 500; 
+// convert angle to microseconds
 digitalWrite(pin, HIGH); 
 // Convert angle to microseconds 
 14 
