@@ -6,17 +6,9 @@ Developed as a Project Exhibition submission for the degree of Bachelor of Techn
 
 ---
 
-## Team
 
-| Name | Registration No. |
-|---|---|
-| Tanya Tanu | 24BEC10116 |
-| Papa Karthik Reddy | 24BEC10157 |
-| Addepalli Sai Krishnam Raju | 24BEC10165 |
 
-**Supervisor:** Dr. Monica P, Assistant Professor, SEEE, VIT Bhopal University
 
----
 
 ## Overview
 
