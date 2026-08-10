@@ -1,226 +1,268 @@
 #include <Servo.h>
 
-//---------------- Motor Pins ----------------//
-#define enA 10
-#define in1 9
-#define in2 8
-#define in3 7
-#define in4 6
-#define enB 5
+// ================= MOTOR PINS =================
+#define ENA 10
+#define IN1 9
+#define IN2 8
+#define IN3 7
+#define IN4 6
+#define ENB 5
 
-//---------------- Sensor Pins ----------------//
-#define L_S A0
-#define R_S A1
+// ================= SENSOR PINS =================
+#define LEFT_SENSOR  A0
+#define RIGHT_SENSOR A1
 
-#define echoPin A2
-#define trigPin A3
+#define ECHO_PIN A2
+#define TRIG_PIN A3
 
-#define servoPin A5
+#define SERVO_PIN A5
 
-//---------------- Constants ----------------//
-const int MOTOR_SPEED = 200;
+// ================= CONSTANTS =================
+const byte MOTOR_SPEED = 200;
 const int OBSTACLE_DISTANCE = 15;
+
+const byte SERVO_CENTER = 70;
+const byte SERVO_RIGHT  = 140;
+const byte SERVO_LEFT   = 0;
+
+const unsigned long SERVO_DELAY = 250;
 
 Servo scanServo;
 
-long distanceFront;
-long distanceLeft;
-long distanceRight;
+int distanceFront;
+int distanceLeft;
+int distanceRight;
 
-//========================================================
+
+// =================================================
 // SETUP
-//========================================================
+// =================================================
 
 void setup()
 {
   Serial.begin(9600);
 
-  pinMode(L_S, INPUT);
-  pinMode(R_S, INPUT);
+  // Sensors
+  pinMode(LEFT_SENSOR, INPUT);
+  pinMode(RIGHT_SENSOR, INPUT);
 
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
-  pinMode(enA, OUTPUT);
-  pinMode(enB, OUTPUT);
+  // Motor pins
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
 
-  pinMode(in1, OUTPUT);
-  pinMode(in2, OUTPUT);
-  pinMode(in3, OUTPUT);
-  pinMode(in4, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
 
-  analogWrite(enA, MOTOR_SPEED);
-  analogWrite(enB, MOTOR_SPEED);
+  // Motor speed
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
 
-  scanServo.attach(servoPin);
+  // Servo
+  scanServo.attach(SERVO_PIN);
+  scanServo.write(SERVO_CENTER);
 
-  scanServo.write(70);
+  Stop();
+
   delay(500);
-
-  distanceFront = Ultrasonic_read();
 }
 
-//========================================================
-// LOOP
-//========================================================
+
+// =================================================
+// MAIN LOOP
+// =================================================
 
 void loop()
 {
-  bool leftSensor = digitalRead(L_S);
-  bool rightSensor = digitalRead(R_S);
+  bool left = digitalRead(LEFT_SENSOR);
+  bool right = digitalRead(RIGHT_SENSOR);
 
-  distanceFront = Ultrasonic_read();
+  distanceFront = ultrasonicRead();
 
-  Serial.print("Front = ");
+  // Debugging
+  Serial.print("Front: ");
   Serial.println(distanceFront);
 
-  // Line detected
-  if (!leftSensor && !rightSensor)
+  // -------- LINE DETECTION --------
+
+  // Both sensors on line
+  if (!left && !right)
   {
     if (distanceFront > OBSTACLE_DISTANCE)
       forward();
     else
-      checkSide();
+      checkSides();
   }
 
-  else if (rightSensor && !leftSensor)
+  // Right sensor detects line
+  else if (right && !left)
   {
     turnRight();
   }
 
-  else if (!rightSensor && leftSensor)
+  // Left sensor detects line
+  else if (!right && left)
   {
     turnLeft();
   }
 
+  // Both sensors detect something
   else
   {
     Stop();
   }
-
-  delay(10);
 }
 
-//========================================================
-// ULTRASONIC
-//========================================================
 
-long Ultrasonic_read()
+// =================================================
+// ULTRASONIC SENSOR
+// =================================================
+
+int ultrasonicRead()
 {
-  digitalWrite(trigPin, LOW);
+  digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
 
-  digitalWrite(trigPin, HIGH);
+  digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
 
-  digitalWrite(trigPin, LOW);
+  digitalWrite(TRIG_PIN, LOW);
 
-  long duration = pulseIn(echoPin, HIGH, 30000);
+  unsigned long duration =
+      pulseIn(ECHO_PIN, HIGH, 25000);
 
+  // No echo = assume no obstacle nearby
   if (duration == 0)
     return 100;
 
   return duration / 58;
 }
 
-//========================================================
-// SERVO SCAN
-//========================================================
 
-long scan(int angle)
+// =================================================
+// SERVO SCANNING
+// =================================================
+
+int scanDirection(byte angle)
 {
   scanServo.write(angle);
-  delay(300);
 
-  return Ultrasonic_read();
+  delay(SERVO_DELAY);
+
+  return ultrasonicRead();
 }
 
-//========================================================
-// CHECK BOTH SIDES
-//========================================================
 
-void checkSide()
+// =================================================
+// CHECK LEFT AND RIGHT
+// =================================================
+
+void checkSides()
 {
   Stop();
+  delay(100);
 
-  delay(200);
+  // Check right
+  distanceRight = scanDirection(SERVO_RIGHT);
 
-  distanceRight = scan(140);
-
-  Serial.print("Right = ");
+  Serial.print("Right: ");
   Serial.println(distanceRight);
 
-  distanceLeft = scan(0);
+  // Check left
+  distanceLeft = scanDirection(SERVO_LEFT);
 
-  Serial.print("Left = ");
+  Serial.print("Left: ");
   Serial.println(distanceLeft);
 
-  scanServo.write(70);
+  // Return servo to center
+  scanServo.write(SERVO_CENTER);
+  delay(100);
 
-  compareDistance();
+  chooseDirection();
 }
 
-//========================================================
-// DECISION
-//========================================================
 
-void compareDistance()
+// =================================================
+// CHOOSE BEST DIRECTION
+// =================================================
+
+void chooseDirection()
 {
   if (distanceLeft > distanceRight)
   {
+    // Turn left
     turnLeft();
-    delay(500);
+    delay(450);
 
     forward();
-    delay(600);
+    delay(550);
 
     turnRight();
-    delay(500);
+    delay(450);
   }
   else
   {
+    // Turn right
     turnRight();
-    delay(500);
+    delay(450);
 
     forward();
-    delay(600);
+    delay(550);
 
     turnLeft();
-    delay(500);
+    delay(450);
   }
+
+  Stop();
 }
 
-//========================================================
+
+// =================================================
 // MOTOR CONTROL
-//========================================================
+// =================================================
 
-void motor(bool a, bool b, bool c, bool d)
+void motor(bool leftA, bool leftB,
+           bool rightA, bool rightB)
 {
-  digitalWrite(in1, a);
-  digitalWrite(in2, b);
-  digitalWrite(in3, c);
-  digitalWrite(in4, d);
+  digitalWrite(IN1, leftA);
+  digitalWrite(IN2, leftB);
+
+  digitalWrite(IN3, rightA);
+  digitalWrite(IN4, rightB);
 }
+
+
+// =================================================
+// MOVEMENT FUNCTIONS
+// =================================================
 
 void forward()
 {
   motor(LOW, HIGH, HIGH, LOW);
 }
 
+
 void backward()
 {
   motor(HIGH, LOW, LOW, HIGH);
 }
+
 
 void turnLeft()
 {
   motor(HIGH, LOW, HIGH, LOW);
 }
 
+
 void turnRight()
 {
   motor(LOW, HIGH, LOW, HIGH);
 }
+
 
 void Stop()
 {
