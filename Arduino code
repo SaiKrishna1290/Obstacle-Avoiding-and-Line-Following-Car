@@ -1,270 +1,476 @@
 #include <Servo.h>
 
-// ================= MOTOR PINS =================
+// ============================================================
+//                  MOTOR PIN CONFIGURATION
+// ============================================================
+
 #define ENA 10
 #define IN1 9
 #define IN2 8
+
 #define IN3 7
 #define IN4 6
 #define ENB 5
 
-// ================= SENSOR PINS =================
+
+// ============================================================
+//                  SENSOR CONFIGURATION
+// ============================================================
+
 #define LEFT_SENSOR  A0
 #define RIGHT_SENSOR A1
 
-#define ECHO_PIN A2
 #define TRIG_PIN A3
+#define ECHO_PIN A2
 
 #define SERVO_PIN A5
 
-// ================= CONSTANTS =================
-const byte MOTOR_SPEED = 200;
+
+// ============================================================
+//                  ROBOT PARAMETERS
+// ============================================================
+
+const int BASE_SPEED = 200;
+const int TURN_SPEED = 180;
+
 const int OBSTACLE_DISTANCE = 15;
+const int MAX_DISTANCE = 100;
 
-const byte SERVO_CENTER = 70;
-const byte SERVO_RIGHT  = 140;
-const byte SERVO_LEFT   = 0;
+const int LINE_DELAY = 5;
 
-const unsigned long SERVO_DELAY = 250;
+const int SERVO_CENTER = 70;
+const int SERVO_LEFT   = 10;
+const int SERVO_RIGHT  = 130;
+
+
+// ============================================================
+//                  TIMING PARAMETERS
+// ============================================================
+
+const unsigned long SERVO_SETTLE_TIME = 250;
+
+const unsigned long TURN_TIME = 400;
+const unsigned long FORWARD_TIME = 500;
+
+
+// ============================================================
+//                  GLOBAL VARIABLES
+// ============================================================
 
 Servo scanServo;
 
-int distanceFront;
-int distanceLeft;
-int distanceRight;
+int frontDistance = MAX_DISTANCE;
+int leftDistance  = MAX_DISTANCE;
+int rightDistance = MAX_DISTANCE;
+
+bool leftSensor;
+bool rightSensor;
 
 
-// =================================================
-// SETUP
-// =================================================
+// ============================================================
+//                  SETUP
+// ============================================================
 
 void setup()
 {
-  Serial.begin(9600);
+    Serial.begin(9600);
 
-  // Sensors
-  pinMode(LEFT_SENSOR, INPUT);
-  pinMode(RIGHT_SENSOR, INPUT);
+    // ---------------- Sensors ----------------
 
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
+    pinMode(LEFT_SENSOR, INPUT);
+    pinMode(RIGHT_SENSOR, INPUT);
 
-  // Motor pins
-  pinMode(ENA, OUTPUT);
-  pinMode(ENB, OUTPUT);
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
 
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
 
-  // Motor speed
-  analogWrite(ENA, MOTOR_SPEED);
-  analogWrite(ENB, MOTOR_SPEED);
+    // ---------------- Motors ----------------
 
-  // Servo
-  scanServo.attach(SERVO_PIN);
-  scanServo.write(SERVO_CENTER);
+    pinMode(ENA, OUTPUT);
+    pinMode(ENB, OUTPUT);
 
-  Stop();
+    pinMode(IN1, OUTPUT);
+    pinMode(IN2, OUTPUT);
 
-  delay(500);
+    pinMode(IN3, OUTPUT);
+    pinMode(IN4, OUTPUT);
+
+
+    // ---------------- Servo ----------------
+
+    scanServo.attach(SERVO_PIN);
+
+    scanServo.write(SERVO_CENTER);
+
+
+    // ---------------- Initial Motor State ----------------
+
+    stopRobot();
+
+    setMotorSpeed(BASE_SPEED, BASE_SPEED);
+
+    delay(500);
+
+    Serial.println("Robot Ready");
 }
 
 
-// =================================================
-// MAIN LOOP
-// =================================================
+// ============================================================
+//                  MAIN LOOP
+// ============================================================
 
 void loop()
 {
-  bool left = digitalRead(LEFT_SENSOR);
-  bool right = digitalRead(RIGHT_SENSOR);
+    // Read line sensors
+    readLineSensors();
 
-  distanceFront = ultrasonicRead();
+    // Measure front distance
+    frontDistance = getDistance();
 
-  // Debugging
-  Serial.print("Front: ");
-  Serial.println(distanceFront);
 
-  // -------- LINE DETECTION --------
+    // Debug information
+    printSensorData();
 
-  // Both sensors on line
-  if (!left && !right)
-  {
-    if (distanceFront > OBSTACLE_DISTANCE)
-      forward();
+
+    // ========================================================
+    //              LINE FOLLOWING + OBSTACLE
+    // ========================================================
+
+    if (!leftSensor && !rightSensor)
+    {
+        // Both sensors indicate line
+
+        if (frontDistance > OBSTACLE_DISTANCE)
+        {
+            moveForward();
+        }
+        else
+        {
+            avoidObstacle();
+        }
+    }
+
+    else if (leftSensor && !rightSensor)
+    {
+        // Line detected on left
+
+        turnLeft();
+    }
+
+    else if (!leftSensor && rightSensor)
+    {
+        // Line detected on right
+
+        turnRight();
+    }
+
     else
-      checkSides();
-  }
+    {
+        // Both sensors detect line
 
-  // Right sensor detects line
-  else if (right && !left)
-  {
-    turnRight();
-  }
+        stopRobot();
+    }
 
-  // Left sensor detects line
-  else if (!right && left)
-  {
+    delay(LINE_DELAY);
+}
+
+
+// ============================================================
+//                  READ LINE SENSORS
+// ============================================================
+
+void readLineSensors()
+{
+    leftSensor = digitalRead(LEFT_SENSOR);
+    rightSensor = digitalRead(RIGHT_SENSOR);
+}
+
+
+// ============================================================
+//                  ULTRASONIC DISTANCE
+// ============================================================
+
+int getDistance()
+{
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+
+    digitalWrite(TRIG_PIN, LOW);
+
+
+    unsigned long duration =
+        pulseIn(ECHO_PIN, HIGH, 25000);
+
+
+    // No echo received
+    if (duration == 0)
+    {
+        return MAX_DISTANCE;
+    }
+
+
+    int distance = duration / 58;
+
+
+    // Limit maximum distance
+    if (distance > MAX_DISTANCE)
+    {
+        distance = MAX_DISTANCE;
+    }
+
+
+    return distance;
+}
+
+
+// ============================================================
+//                  SERVO SCANNING
+// ============================================================
+
+int scanAtAngle(int angle)
+{
+    scanServo.write(angle);
+
+    delay(SERVO_SETTLE_TIME);
+
+    return getDistance();
+}
+
+
+// ============================================================
+//                  OBSTACLE AVOIDANCE
+// ============================================================
+
+void avoidObstacle()
+{
+    Serial.println("Obstacle detected!");
+
+    // Stop immediately
+    stopRobot();
+
+    delay(100);
+
+
+    // --------------------------------------------------------
+    // Scan right
+    // --------------------------------------------------------
+
+    rightDistance = scanAtAngle(SERVO_RIGHT);
+
+    Serial.print("Right Distance: ");
+    Serial.println(rightDistance);
+
+
+    // --------------------------------------------------------
+    // Scan left
+    // --------------------------------------------------------
+
+    leftDistance = scanAtAngle(SERVO_LEFT);
+
+    Serial.print("Left Distance: ");
+    Serial.println(leftDistance);
+
+
+    // Return servo to center
+    scanServo.write(SERVO_CENTER);
+
+    delay(100);
+
+
+    // --------------------------------------------------------
+    // Choose direction
+    // --------------------------------------------------------
+
+    if (leftDistance > rightDistance)
+    {
+        Serial.println("Turning LEFT");
+
+        performLeftAvoidance();
+    }
+    else
+    {
+        Serial.println("Turning RIGHT");
+
+        performRightAvoidance();
+    }
+}
+
+
+// ============================================================
+//                  LEFT AVOIDANCE
+// ============================================================
+
+void performLeftAvoidance()
+{
     turnLeft();
-  }
 
-  // Both sensors detect something
-  else
-  {
-    Stop();
-  }
-}
+    delay(TURN_TIME);
 
 
-// =================================================
-// ULTRASONIC SENSOR
-// =================================================
+    moveForward();
 
-int ultrasonicRead()
-{
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
+    delay(FORWARD_TIME);
 
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-
-  digitalWrite(TRIG_PIN, LOW);
-
-  unsigned long duration =
-      pulseIn(ECHO_PIN, HIGH, 25000);
-
-  // No echo = assume no obstacle nearby
-  if (duration == 0)
-    return 100;
-
-  return duration / 58;
-}
-
-
-// =================================================
-// SERVO SCANNING
-// =================================================
-
-int scanDirection(byte angle)
-{
-  scanServo.write(angle);
-
-  delay(SERVO_DELAY);
-
-  return ultrasonicRead();
-}
-
-
-// =================================================
-// CHECK LEFT AND RIGHT
-// =================================================
-
-void checkSides()
-{
-  Stop();
-  delay(100);
-
-  // Check right
-  distanceRight = scanDirection(SERVO_RIGHT);
-
-  Serial.print("Right: ");
-  Serial.println(distanceRight);
-
-  // Check left
-  distanceLeft = scanDirection(SERVO_LEFT);
-
-  Serial.print("Left: ");
-  Serial.println(distanceLeft);
-
-  // Return servo to center
-  scanServo.write(SERVO_CENTER);
-  delay(100);
-
-  chooseDirection();
-}
-
-
-// =================================================
-// CHOOSE BEST DIRECTION
-// =================================================
-
-void chooseDirection()
-{
-  if (distanceLeft > distanceRight)
-  {
-    // Turn left
-    turnLeft();
-    delay(450);
-
-    forward();
-    delay(550);
 
     turnRight();
-    delay(450);
-  }
-  else
-  {
-    // Turn right
-    turnRight();
-    delay(450);
 
-    forward();
-    delay(550);
+    delay(TURN_TIME);
+
+
+    stopRobot();
+}
+
+
+// ============================================================
+//                  RIGHT AVOIDANCE
+// ============================================================
+
+void performRightAvoidance()
+{
+    turnRight();
+
+    delay(TURN_TIME);
+
+
+    moveForward();
+
+    delay(FORWARD_TIME);
+
 
     turnLeft();
-    delay(450);
-  }
 
-  Stop();
+    delay(TURN_TIME);
+
+
+    stopRobot();
 }
 
 
-// =================================================
-// MOTOR CONTROL
-// =================================================
+// ============================================================
+//                  MOTOR SPEED CONTROL
+// ============================================================
 
-void motor(bool leftA, bool leftB,
-           bool rightA, bool rightB)
+void setMotorSpeed(int leftSpeed, int rightSpeed)
 {
-  digitalWrite(IN1, leftA);
-  digitalWrite(IN2, leftB);
+    leftSpeed  = constrain(leftSpeed, 0, 255);
+    rightSpeed = constrain(rightSpeed, 0, 255);
 
-  digitalWrite(IN3, rightA);
-  digitalWrite(IN4, rightB);
+    analogWrite(ENA, leftSpeed);
+    analogWrite(ENB, rightSpeed);
 }
 
 
-// =================================================
-// MOVEMENT FUNCTIONS
-// =================================================
+// ============================================================
+//                  MOTOR CONTROL
+// ============================================================
 
-void forward()
+void motorControl(
+    bool leftForward,
+    bool leftBackward,
+    bool rightForward,
+    bool rightBackward)
 {
-  motor(LOW, HIGH, HIGH, LOW);
+    digitalWrite(IN1, leftForward);
+    digitalWrite(IN2, leftBackward);
+
+    digitalWrite(IN3, rightForward);
+    digitalWrite(IN4, rightBackward);
 }
 
 
-void backward()
+// ============================================================
+//                  MOVEMENT FUNCTIONS
+// ============================================================
+
+void moveForward()
 {
-  motor(HIGH, LOW, LOW, HIGH);
+    setMotorSpeed(BASE_SPEED, BASE_SPEED);
+
+    motorControl(
+        LOW, HIGH,
+        HIGH, LOW
+    );
 }
 
+
+// ============================================================
+//                  MOVE BACKWARD
+// ============================================================
+
+void moveBackward()
+{
+    setMotorSpeed(BASE_SPEED, BASE_SPEED);
+
+    motorControl(
+        HIGH, LOW,
+        LOW, HIGH
+    );
+}
+
+
+// ============================================================
+//                  TURN LEFT
+// ============================================================
 
 void turnLeft()
 {
-  motor(HIGH, LOW, HIGH, LOW);
+    setMotorSpeed(TURN_SPEED, TURN_SPEED);
+
+    motorControl(
+        HIGH, LOW,
+        HIGH, LOW
+    );
 }
 
+
+// ============================================================
+//                  TURN RIGHT
+// ============================================================
 
 void turnRight()
 {
-  motor(LOW, HIGH, LOW, HIGH);
+    setMotorSpeed(TURN_SPEED, TURN_SPEED);
+
+    motorControl(
+        LOW, HIGH,
+        LOW, HIGH
+    );
 }
 
 
-void Stop()
+// ============================================================
+//                  STOP ROBOT
+// ============================================================
+
+void stopRobot()
 {
-  motor(LOW, LOW, LOW, LOW);
+    motorControl(
+        LOW, LOW,
+        LOW, LOW
+    );
+
+    analogWrite(ENA, 0);
+    analogWrite(ENB, 0);
+}
+
+
+// ============================================================
+//                  DEBUG INFORMATION
+// ============================================================
+
+void printSensorData()
+{
+    Serial.print("L: ");
+    Serial.print(leftSensor);
+
+    Serial.print(" | R: ");
+    Serial.print(rightSensor);
+
+    Serial.print(" | Front: ");
+    Serial.print(frontDistance);
+
+    Serial.println(" cm");
 }
