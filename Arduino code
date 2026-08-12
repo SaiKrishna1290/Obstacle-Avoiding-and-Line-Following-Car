@@ -476,7 +476,7 @@ void readLineSensors()
 
 
 // ============================================================
-//                  FILTERED DISTANCE
+//                  FILTERED DISTANCE..
 // ============================================================
 
 int getFilteredDistance()
