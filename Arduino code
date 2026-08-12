@@ -4,7 +4,7 @@
 //                    PIN CONFIGURATION
 // ============================================================
 
-// Motor Driver
+// Motor driver
 const byte ENA = 10;
 const byte IN1 = 9;
 const byte IN2 = 8;
@@ -13,11 +13,11 @@ const byte IN3 = 7;
 const byte IN4 = 6;
 const byte ENB = 5;
 
-// IR Sensors
+// IR sensors
 const byte LEFT_SENSOR  = A0;
 const byte RIGHT_SENSOR = A1;
 
-// Ultrasonic Sensor
+// Ultrasonic
 const byte TRIG_PIN = A3;
 const byte ECHO_PIN = A2;
 
@@ -26,98 +26,141 @@ const byte SERVO_PIN = A5;
 
 
 // ============================================================
-//                    ROBOT PARAMETERS
+//                    SPEED SETTINGS
 // ============================================================
 
-const byte BASE_SPEED = 200;
-const byte TURN_SPEED = 180;
+const byte MAX_SPEED       = 220;
+const byte BASE_SPEED      = 190;
+const byte TURN_SPEED      = 175;
+const byte SHARP_TURN      = 210;
+const byte SLOW_SPEED      = 130;
+
+
+// ============================================================
+//                    DISTANCE SETTINGS
+// ============================================================
 
 const byte OBSTACLE_DISTANCE = 15;
-const byte MAX_DISTANCE = 100;
+const byte WARNING_DISTANCE  = 25;
+const byte MAX_DISTANCE      = 100;
 
-// Servo positions
+
+// ============================================================
+//                    SERVO SETTINGS
+// ============================================================
+
 const byte SERVO_CENTER = 70;
 const byte SERVO_LEFT   = 10;
 const byte SERVO_RIGHT  = 130;
 
 
 // ============================================================
-//                    TIMING PARAMETERS
+//                    TIMING SETTINGS
 // ============================================================
 
-const unsigned long SENSOR_INTERVAL = 25;
-const unsigned long SERVO_SETTLE_TIME = 180;
+const unsigned long SENSOR_INTERVAL = 20;
+const unsigned long DISTANCE_INTERVAL = 60;
 
-const unsigned long TURN_TIME = 400;
-const unsigned long FORWARD_TIME = 500;
+const unsigned long SERVO_SETTLE = 180;
 
-const unsigned long STOP_TIME = 100;
+const unsigned long TURN_TIME = 350;
+const unsigned long FORWARD_TIME = 450;
+
+const unsigned long LOST_LINE_TIME = 250;
+
+const unsigned long STUCK_TIME = 1200;
 
 
 // ============================================================
-//                    DEBUG CONTROL
+//                    DEBUG
 // ============================================================
 
-// Change to true when debugging
 const bool DEBUG = false;
 
 
 // ============================================================
-//                    OBJECTS
+//                    SERVO OBJECT
 // ============================================================
 
 Servo scanServo;
 
 
 // ============================================================
-//                    ROBOT STATES
+//                    ROBOT STATE
 // ============================================================
 
 enum RobotState
 {
-    FOLLOW_LINE,
-    STOP_FOR_SCAN,
+    LINE_FOLLOWING,
+    STOPPING,
     SCAN_RIGHT,
     SCAN_LEFT,
-    CHOOSE_DIRECTION,
+    DECIDE_DIRECTION,
     AVOID_TURN_1,
     AVOID_FORWARD,
-    AVOID_TURN_2
+    AVOID_TURN_2,
+    RECOVER
 };
 
-RobotState state = FOLLOW_LINE;
-
-
-// ============================================================
-//                    GLOBAL VARIABLES
-// ============================================================
-
-bool leftSensor = false;
-bool rightSensor = false;
-
-int frontDistance = MAX_DISTANCE;
-int leftDistance  = MAX_DISTANCE;
-int rightDistance = MAX_DISTANCE;
-
-bool avoidLeft = false;
-
-unsigned long previousSensorTime = 0;
-unsigned long stateStartTime = 0;
+RobotState state = LINE_FOLLOWING;
 
 
 // ============================================================
 //                    MOTOR STATE
 // ============================================================
 
-enum MotorAction
+enum MotorState
 {
-    MOTOR_STOP,
-    MOTOR_FORWARD,
-    MOTOR_LEFT,
-    MOTOR_RIGHT
+    STOPPED,
+    FORWARD,
+    LEFT,
+    RIGHT,
+    BACKWARD
 };
 
-MotorAction currentMotor = MOTOR_STOP;
+MotorState motorState = STOPPED;
+
+
+// ============================================================
+//                    VARIABLES
+// ============================================================
+
+bool leftSensor;
+bool rightSensor;
+
+int frontDistance = MAX_DISTANCE;
+int leftDistance  = MAX_DISTANCE;
+int rightDistance = MAX_DISTANCE;
+
+int distanceBuffer[3] = {
+    MAX_DISTANCE,
+    MAX_DISTANCE,
+    MAX_DISTANCE
+};
+
+byte distanceIndex = 0;
+
+bool turnLeftDirection = false;
+
+unsigned long lastSensorRead = 0;
+unsigned long lastDistanceRead = 0;
+unsigned long stateStartTime = 0;
+unsigned long lineLostTime = 0;
+unsigned long movementStartTime = 0;
+
+
+// ============================================================
+//                    LAST LINE DIRECTION
+// ============================================================
+
+enum LineDirection
+{
+    NO_DIRECTION,
+    LAST_LEFT,
+    LAST_RIGHT
+};
+
+LineDirection lastDirection = NO_DIRECTION;
 
 
 // ============================================================
@@ -126,7 +169,6 @@ MotorAction currentMotor = MOTOR_STOP;
 
 void setup()
 {
-    // Serial only when debugging
     if (DEBUG)
         Serial.begin(9600);
 
@@ -138,7 +180,7 @@ void setup()
     pinMode(TRIG_PIN, OUTPUT);
     pinMode(ECHO_PIN, INPUT);
 
-    // Motor pins
+    // Motor driver
     pinMode(ENA, OUTPUT);
     pinMode(ENB, OUTPUT);
 
@@ -152,10 +194,7 @@ void setup()
     scanServo.attach(SERVO_PIN);
     scanServo.write(SERVO_CENTER);
 
-    // Initial state
     stopRobot();
-
-    delay(300);
 
     if (DEBUG)
         Serial.println(F("Robot Ready"));
@@ -171,19 +210,28 @@ void loop()
     unsigned long now = millis();
 
     // --------------------------------------------------------
-    // Read sensors periodically
+    // Read IR sensors frequently
     // --------------------------------------------------------
 
-    if (now - previousSensorTime >= SENSOR_INTERVAL)
+    if (now - lastSensorRead >= SENSOR_INTERVAL)
     {
-        previousSensorTime = now;
+        lastSensorRead = now;
 
         readLineSensors();
+    }
 
-        // Only read front distance during normal operation
-        if (state == FOLLOW_LINE)
+
+    // --------------------------------------------------------
+    // Read ultrasonic periodically
+    // --------------------------------------------------------
+
+    if (now - lastDistanceRead >= DISTANCE_INTERVAL)
+    {
+        lastDistanceRead = now;
+
+        if (state == LINE_FOLLOWING)
         {
-            frontDistance = getDistance();
+            frontDistance = getFilteredDistance();
         }
     }
 
@@ -194,116 +242,48 @@ void loop()
 
     switch (state)
     {
-        case FOLLOW_LINE:
-            followLine();
+        case LINE_FOLLOWING:
+            lineFollowing();
             break;
 
 
-        case STOP_FOR_SCAN:
-
-            stopRobot();
-
-            if (now - stateStartTime >= STOP_TIME)
-            {
-                scanServo.write(SERVO_RIGHT);
-
-                stateStartTime = now;
-                state = SCAN_RIGHT;
-            }
-
+        case STOPPING:
+            obstacleStop();
             break;
 
 
         case SCAN_RIGHT:
-
-            if (now - stateStartTime >= SERVO_SETTLE_TIME)
-            {
-                rightDistance = getDistance();
-
-                scanServo.write(SERVO_LEFT);
-
-                stateStartTime = now;
-                state = SCAN_LEFT;
-            }
-
+            scanRight();
             break;
 
 
         case SCAN_LEFT:
-
-            if (now - stateStartTime >= SERVO_SETTLE_TIME)
-            {
-                leftDistance = getDistance();
-
-                scanServo.write(SERVO_CENTER);
-
-                state = CHOOSE_DIRECTION;
-            }
-
+            scanLeft();
             break;
 
 
-        case CHOOSE_DIRECTION:
-
-            if (leftDistance > rightDistance)
-            {
-                avoidLeft = true;
-            }
-            else
-            {
-                avoidLeft = false;
-            }
-
-            stateStartTime = now;
-
-            if (avoidLeft)
-                turnLeft();
-            else
-                turnRight();
-
-            state = AVOID_TURN_1;
-
+        case DECIDE_DIRECTION:
+            decideDirection();
             break;
 
 
         case AVOID_TURN_1:
-
-            if (now - stateStartTime >= TURN_TIME)
-            {
-                moveForward();
-
-                stateStartTime = now;
-                state = AVOID_FORWARD;
-            }
-
+            avoidanceTurn1();
             break;
 
 
         case AVOID_FORWARD:
-
-            if (now - stateStartTime >= FORWARD_TIME)
-            {
-                if (avoidLeft)
-                    turnRight();
-                else
-                    turnLeft();
-
-                stateStartTime = now;
-                state = AVOID_TURN_2;
-            }
-
+            avoidanceForward();
             break;
 
 
         case AVOID_TURN_2:
+            avoidanceTurn2();
+            break;
 
-            if (now - stateStartTime >= TURN_TIME)
-            {
-                stopRobot();
 
-                state = FOLLOW_LINE;
-            }
-
+        case RECOVER:
+            recoverRobot();
             break;
     }
 }
@@ -313,57 +293,231 @@ void loop()
 //                    LINE FOLLOWING
 // ============================================================
 
-void followLine()
+void lineFollowing()
 {
-    /*
-        Sensor combinations:
+    // --------------------------------------------------------
+    // Obstacle detection
+    // --------------------------------------------------------
 
-        00 -> Both on line
-        10 -> Left sensor active
-        01 -> Right sensor active
-        11 -> Both active
-    */
+    if (frontDistance <= OBSTACLE_DISTANCE)
+    {
+        stopRobot();
+
+        stateStartTime = millis();
+
+        state = STOPPING;
+
+        return;
+    }
+
+
+    // --------------------------------------------------------
+    // Both sensors OFF
+    // --------------------------------------------------------
 
     if (!leftSensor && !rightSensor)
     {
-        // Check obstacle
-        if (frontDistance <= OBSTACLE_DISTANCE)
-        {
-            stateStartTime = millis();
-            state = STOP_FOR_SCAN;
-            stopRobot();
-        }
-        else
-        {
-            moveForward();
-        }
+        lineLostTime = millis();
+
+        // Normal forward motion
+        moveForwardAdaptive();
+
+        return;
     }
 
-    else if (leftSensor && !rightSensor)
+
+    // --------------------------------------------------------
+    // Left sensor active
+    // --------------------------------------------------------
+
+    if (leftSensor && !rightSensor)
     {
-        turnLeft();
+        lastDirection = LAST_LEFT;
+
+        lineLostTime = millis();
+
+        turnLeftAdaptive();
+
+        return;
     }
 
-    else if (!leftSensor && rightSensor)
+
+    // --------------------------------------------------------
+    // Right sensor active
+    // --------------------------------------------------------
+
+    if (!leftSensor && rightSensor)
     {
-        turnRight();
+        lastDirection = LAST_RIGHT;
+
+        lineLostTime = millis();
+
+        turnRightAdaptive();
+
+        return;
     }
 
-    else
+
+    // --------------------------------------------------------
+    // Both sensors active
+    // --------------------------------------------------------
+
+    if (leftSensor && rightSensor)
     {
         stopRobot();
+
+        // If both sensors stay active for too long,
+        // attempt recovery.
+        if (millis() - lineLostTime > LOST_LINE_TIME)
+        {
+            state = RECOVER;
+            stateStartTime = millis();
+        }
     }
 }
 
 
 // ============================================================
-//                    READ IR SENSORS
+//              ADAPTIVE FORWARD MOVEMENT
+// ============================================================
+
+void moveForwardAdaptive()
+{
+    byte speed = BASE_SPEED;
+
+    // Slow down when approaching obstacle
+    if (frontDistance <= WARNING_DISTANCE)
+    {
+        speed = SLOW_SPEED;
+    }
+
+    setMotorSpeed(speed, speed);
+
+    if (motorState == FORWARD)
+        return;
+
+    motorState = FORWARD;
+
+    motorControl(
+        LOW, HIGH,
+        HIGH, LOW
+    );
+
+    movementStartTime = millis();
+}
+
+
+// ============================================================
+//                 ADAPTIVE LEFT TURN
+// ============================================================
+
+void turnLeftAdaptive()
+{
+    byte leftSpeed;
+    byte rightSpeed;
+
+    // Slow inside wheel for smoother turning
+    leftSpeed = TURN_SPEED - 50;
+    rightSpeed = TURN_SPEED;
+
+    setMotorSpeed(leftSpeed, rightSpeed);
+
+    if (motorState == LEFT)
+        return;
+
+    motorState = LEFT;
+
+    motorControl(
+        HIGH, LOW,
+        HIGH, LOW
+    );
+
+    movementStartTime = millis();
+}
+
+
+// ============================================================
+//                 ADAPTIVE RIGHT TURN
+// ============================================================
+
+void turnRightAdaptive()
+{
+    byte leftSpeed;
+    byte rightSpeed;
+
+    leftSpeed = TURN_SPEED;
+    rightSpeed = TURN_SPEED - 50;
+
+    setMotorSpeed(leftSpeed, rightSpeed);
+
+    if (motorState == RIGHT)
+        return;
+
+    motorState = RIGHT;
+
+    motorControl(
+        LOW, HIGH,
+        LOW, HIGH
+    );
+
+    movementStartTime = millis();
+}
+
+
+// ============================================================
+//                    READ LINE SENSORS
 // ============================================================
 
 void readLineSensors()
 {
-    leftSensor  = digitalRead(LEFT_SENSOR);
+    leftSensor = digitalRead(LEFT_SENSOR);
     rightSensor = digitalRead(RIGHT_SENSOR);
+}
+
+
+// ============================================================
+//                  FILTERED DISTANCE
+// ============================================================
+
+int getFilteredDistance()
+{
+    int newDistance = getDistance();
+
+    distanceBuffer[distanceIndex] = newDistance;
+
+    distanceIndex++;
+
+    if (distanceIndex >= 3)
+        distanceIndex = 0;
+
+    // Sort three values
+    int a = distanceBuffer[0];
+    int b = distanceBuffer[1];
+    int c = distanceBuffer[2];
+
+    // Median filter
+    if (a > b)
+    {
+        int temp = a;
+        a = b;
+        b = temp;
+    }
+
+    if (b > c)
+    {
+        int temp = b;
+        b = c;
+        c = temp;
+    }
+
+    if (a > b)
+    {
+        int temp = a;
+        a = b;
+        b = temp;
+    }
+
+    return b;
 }
 
 
@@ -373,7 +527,6 @@ void readLineSensors()
 
 int getDistance()
 {
-    // Trigger pulse
     digitalWrite(TRIG_PIN, LOW);
     delayMicroseconds(2);
 
@@ -382,18 +535,14 @@ int getDistance()
 
     digitalWrite(TRIG_PIN, LOW);
 
-    // Read echo
     unsigned long duration =
         pulseIn(ECHO_PIN, HIGH, 12000UL);
 
-    // No echo
     if (duration == 0)
         return MAX_DISTANCE;
 
-    // Convert to cm
     int distance = duration / 58;
 
-    // Limit maximum
     if (distance > MAX_DISTANCE)
         distance = MAX_DISTANCE;
 
@@ -402,7 +551,221 @@ int getDistance()
 
 
 // ============================================================
-//                    MOTOR SPEED
+//                   OBSTACLE STOP
+// ============================================================
+
+void obstacleStop()
+{
+    stopRobot();
+
+    if (millis() - stateStartTime >= 100)
+    {
+        scanServo.write(SERVO_RIGHT);
+
+        stateStartTime = millis();
+
+        state = SCAN_RIGHT;
+    }
+}
+
+
+// ============================================================
+//                    SCAN RIGHT
+// ============================================================
+
+void scanRight()
+{
+    if (millis() - stateStartTime >= SERVO_SETTLE)
+    {
+        rightDistance = getDistance();
+
+        scanServo.write(SERVO_LEFT);
+
+        stateStartTime = millis();
+
+        state = SCAN_LEFT;
+    }
+}
+
+
+// ============================================================
+//                     SCAN LEFT
+// ============================================================
+
+void scanLeft()
+{
+    if (millis() - stateStartTime >= SERVO_SETTLE)
+    {
+        leftDistance = getDistance();
+
+        scanServo.write(SERVO_CENTER);
+
+        state = DECIDE_DIRECTION;
+    }
+}
+
+
+// ============================================================
+//                 CHOOSE BEST DIRECTION
+// ============================================================
+
+void decideDirection()
+{
+    // Give a small preference to the left
+    // if both distances are almost equal.
+
+    if (leftDistance >= rightDistance)
+    {
+        turnLeftDirection = true;
+    }
+    else
+    {
+        turnLeftDirection = false;
+    }
+
+    stateStartTime = millis();
+
+    if (turnLeftDirection)
+        turnLeftAdaptive();
+    else
+        turnRightAdaptive();
+
+    state = AVOID_TURN_1;
+}
+
+
+// ============================================================
+//                 FIRST AVOIDANCE TURN
+// ============================================================
+
+void avoidanceTurn1()
+{
+    if (millis() - stateStartTime >= TURN_TIME)
+    {
+        moveForwardAvoidance();
+
+        stateStartTime = millis();
+
+        state = AVOID_FORWARD;
+    }
+}
+
+
+// ============================================================
+//                   AVOIDANCE FORWARD
+// ============================================================
+
+void moveForwardAvoidance()
+{
+    setMotorSpeed(MAX_SPEED - 20, MAX_SPEED - 20);
+
+    motorState = FORWARD;
+
+    motorControl(
+        LOW, HIGH,
+        HIGH, LOW
+    );
+}
+
+
+void avoidanceForward()
+{
+    // If another obstacle appears,
+    // immediately stop and rescan.
+
+    frontDistance = getDistance();
+
+    if (frontDistance <= OBSTACLE_DISTANCE)
+    {
+        stopRobot();
+
+        stateStartTime = millis();
+
+        state = STOPPING;
+
+        return;
+    }
+
+
+    if (millis() - stateStartTime >= FORWARD_TIME)
+    {
+        if (turnLeftDirection)
+            turnRightAdaptive();
+        else
+            turnLeftAdaptive();
+
+        stateStartTime = millis();
+
+        state = AVOID_TURN_2;
+    }
+}
+
+
+// ============================================================
+//                 SECOND AVOIDANCE TURN
+// ============================================================
+
+void avoidanceTurn2()
+{
+    if (millis() - stateStartTime >= TURN_TIME)
+    {
+        stopRobot();
+
+        state = LINE_FOLLOWING;
+
+        lineLostTime = millis();
+    }
+}
+
+
+// ============================================================
+//                    LINE RECOVERY
+// ============================================================
+
+void recoverRobot()
+{
+    unsigned long elapsed =
+        millis() - stateStartTime;
+
+
+    // --------------------------------------------------------
+    // Try the previous direction first
+    // --------------------------------------------------------
+
+    if (elapsed < 300)
+    {
+        if (lastDirection == LAST_LEFT)
+        {
+            turnLeftAdaptive();
+        }
+        else if (lastDirection == LAST_RIGHT)
+        {
+            turnRightAdaptive();
+        }
+        else
+        {
+            moveForward();
+        }
+
+        return;
+    }
+
+
+    // --------------------------------------------------------
+    // If line still not found, stop
+    // --------------------------------------------------------
+
+    stopRobot();
+
+    if (elapsed > 600)
+    {
+        state = LINE_FOLLOWING;
+    }
+}
+
+
+// ============================================================
+//                     MOTOR SPEED
 // ============================================================
 
 void setMotorSpeed(byte leftSpeed, byte rightSpeed)
@@ -431,18 +794,18 @@ void motorControl(
 
 
 // ============================================================
-//                    MOVE FORWARD
+//                    BASIC FORWARD
 // ============================================================
 
 void moveForward()
 {
-    if (currentMotor == MOTOR_FORWARD)
-        return;
-
-    currentMotor = MOTOR_FORWARD;
-
     setMotorSpeed(BASE_SPEED, BASE_SPEED);
 
+    if (motorState == FORWARD)
+        return;
+
+    motorState = FORWARD;
+
     motorControl(
         LOW, HIGH,
         HIGH, LOW
@@ -451,55 +814,15 @@ void moveForward()
 
 
 // ============================================================
-//                    TURN LEFT
-// ============================================================
-
-void turnLeft()
-{
-    if (currentMotor == MOTOR_LEFT)
-        return;
-
-    currentMotor = MOTOR_LEFT;
-
-    setMotorSpeed(TURN_SPEED, TURN_SPEED);
-
-    motorControl(
-        HIGH, LOW,
-        HIGH, LOW
-    );
-}
-
-
-// ============================================================
-//                    TURN RIGHT
-// ============================================================
-
-void turnRight()
-{
-    if (currentMotor == MOTOR_RIGHT)
-        return;
-
-    currentMotor = MOTOR_RIGHT;
-
-    setMotorSpeed(TURN_SPEED, TURN_SPEED);
-
-    motorControl(
-        LOW, HIGH,
-        LOW, HIGH
-    );
-}
-
-
-// ============================================================
-//                    STOP ROBOT
+//                     STOP ROBOT
 // ============================================================
 
 void stopRobot()
 {
-    if (currentMotor == MOTOR_STOP)
+    if (motorState == STOPPED)
         return;
 
-    currentMotor = MOTOR_STOP;
+    motorState = STOPPED;
 
     analogWrite(ENA, 0);
     analogWrite(ENB, 0);
