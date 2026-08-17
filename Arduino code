@@ -832,3 +832,13 @@ void stopRobot()
         LOW, LOW
     );
 }
+
+//RF Signal
+  // ↓
+//Rectangular Waveguide
+  // ↓
+//Flared Horn
+  // ↓
+//Aperture
+  // ↓
+//Directional EM Radiation
